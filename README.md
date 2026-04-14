@@ -37,6 +37,7 @@
 | **Resume published** | At least one resume must be saved and active in resumex.dev |
 | **`RESUMEX_API_KEY`** | Generated from resumex.dev → Dashboard → Resumex API |
 | **Python 3.8+** | Already available on most systems (`python3 --version`) |
+| **`requests` library** | `pip3 install -r requirements.txt` or `pip3 install requests` |
 | **`curl`** | Used for direct API calls (`curl --version`) |
 
 ---
@@ -308,10 +309,17 @@ python3 scripts/log_application.py \
   --method "auto-applied" \
   --score 92 \
   --notes "Applied via auto-job-applier skill"
+
+# Test without calling the API
+python3 scripts/log_application.py \
+  --company "Test" --role "Test" --url "https://example.com" --dry-run
 ```
 
 Valid `--status` values: `wishlist` | `applied` | `interview` | `offer` | `rejected`
 Valid `--method` values: `auto-applied` | `manual` | `easy-apply` | `email`
+
+The script automatically retries on transient errors and tries fallback endpoints
+if the primary job logging endpoint returns 404.
 
 **Requires:** `RESUMEX_API_KEY` env var
 
@@ -409,7 +417,9 @@ ERROR: 401 Unauthorized. Your RESUMEX_API_KEY is invalid or expired.
 auto-job-applier/
 ├── SKILL.md                          # Agent instructions (OpenClaw reads this)
 ├── README.md                         # This file
+├── requirements.txt                  # Python dependencies (requests>=2.28.0)
 ├── scripts/
+│   ├── http_client.py               # Shared HTTP client (retry, backoff, errors)
 │   ├── fetch_resume.py               # Fetch resume from resumex.dev API
 │   ├── search_jobs.py                # Generate queries, parse and score jobs
 │   ├── fill_application.py          # Map form fields to resume data
@@ -427,6 +437,16 @@ auto-job-applier/
 ---
 
 ## Changelog
+
+### v2.1.0 (2026-04-14)
+- ✅ **Fixed resume fetch endpoint** — corrected from `/api/v1/agent/resume` (deprecated) to `/api/v1/agent`
+- ✅ **Fixed job logging 404** — added endpoint fallback (`/jobs` → `/logs`) with clear error messages
+- ✅ **Migrated to `requests` library** — replaced all `urllib` with modern session-based HTTP client
+- ✅ **Added shared HTTP client** — `scripts/http_client.py` with retry, exponential backoff, `Retry-After` support
+- ✅ **Added custom error hierarchy** — `AuthenticationError`, `RateLimitError`, `NotFoundError`, `ServerError`, `NetworkError`
+- ✅ **Added `--dry-run` flag** — test `log_application.py` without calling the API
+- ✅ **Added `requirements.txt`** — declares `requests>=2.28.0` dependency
+- ✅ **Cleaned up dead imports** — removed unused `urllib` imports from `fill_application.py`
 
 ### v2.0.0 (2026-04-14)
 - ✅ **Removed Anthropic API dependency** — cover letters now generated via OpenClaw's built-in LLM
@@ -450,6 +470,6 @@ MIT License. See repository root for details.
 ## Links
 
 - **ResumeX:** [resumex.dev](https://resumex.dev)
-- **ResumeX API Docs:** [resumex.dev/docs/api](https://resumex.dev/docs/api)
+- **ResumeX API Docs:** [resumex.dev/api-docs](https://resumex.dev/api-docs)
 - **OpenClaw:** [openclaw.dev](https://openclaw.dev)
 - **ResumeX Privacy Policy:** [resumex.dev/privacy](https://resumex.dev/privacy)

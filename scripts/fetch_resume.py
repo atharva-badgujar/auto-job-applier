@@ -20,11 +20,19 @@ import os
 import re
 import sys
 import json
-import urllib.request
-import urllib.error
 from datetime import datetime
 
-API_BASE = "https://resumex.dev/api/v1/agent"
+# Import shared HTTP client (handles retries, backoff, error classification)
+from http_client import (
+    create_session,
+    get_api_key,
+    ResumeXAPIError,
+    AuthenticationError,
+    NotFoundError,
+    RateLimitError,
+)
+
+RESUME_ENDPOINT = "/api/v1/agent"
 
 # ── Quick field aliases for --field flag ──────────────────────────────────────
 FIELD_ALIASES = {
@@ -51,58 +59,43 @@ FIELD_ALIASES = {
 }
 
 
-def get_api_key():
-    key = os.environ.get("RESUMEX_API_KEY", "").strip()
-    if not key:
-        print(
-            "ERROR: RESUMEX_API_KEY environment variable is not set.\n"
-            "Steps to fix:\n"
-            "  1. Go to https://resumex.dev → Settings → API Keys\n"
-            "  2. Generate a new API key\n"
-            "  3. Set RESUMEX_API_KEY in your OpenClaw environment variables",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    return key
-
-
 def fetch_resume(api_key: str) -> dict:
-    url = f"{API_BASE}/resume"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            raw = resp.read().decode("utf-8")
-            return json.loads(raw)
-    except urllib.error.HTTPError as e:
-        if e.code == 401:
-            print(
-                "ERROR: 401 Unauthorized. Your RESUMEX_API_KEY is invalid or expired.\n"
-                "Please generate a new key at resumex.dev → Settings → API Keys",
-                file=sys.stderr,
-            )
-        elif e.code == 404:
+    """
+    Fetch resume data from the ResumeX API.
+
+    Uses the shared HTTP client which automatically handles:
+    - Retry with exponential backoff on 429/5xx/network errors
+    - Retry-After header support for rate limits
+    - Structured error messages for auth, 404, etc.
+
+    Args:
+        api_key: ResumeX API key
+
+    Returns:
+        Parsed JSON response from the API
+    """
+    with create_session(api_key) as session:
+        try:
+            return session.api_get(RESUME_ENDPOINT)
+        except AuthenticationError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+        except NotFoundError:
             print(
                 "ERROR: 404 Not Found. Make sure your resume is set up at resumex.dev.",
                 file=sys.stderr,
             )
-        elif e.code == 429:
+            sys.exit(1)
+        except RateLimitError as e:
             print(
-                "ERROR: 429 Rate Limited. Please wait a moment and try again.",
+                f"ERROR: {e}\n"
+                f"Rate limit exceeded after retries. Please wait and try again.",
                 file=sys.stderr,
             )
-        else:
-            print(f"ERROR: HTTP {e.code} — {e.reason}", file=sys.stderr)
-        sys.exit(1)
-    except urllib.error.URLError as e:
-        print(f"ERROR: Network error — {e.reason}", file=sys.stderr)
-        sys.exit(1)
+            sys.exit(1)
+        except ResumeXAPIError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
 
 
 def summarize_profile(resume: dict) -> str:
@@ -164,7 +157,7 @@ Top Skills  : {", ".join(flat_skills[:8]) if flat_skills else "None listed"}
 
 def resolve_json_path(data: dict, path: str):
     """Resolve a dotted JSON path with array index support."""
-    parts = re.split(r'\.|\[(\d+)\]', path)
+    parts = re.split(r'\.|(\d+)', path.replace("[", ".").replace("]", ""))
     parts = [p for p in parts if p is not None and p != '']
 
     current = data

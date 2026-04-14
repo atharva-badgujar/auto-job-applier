@@ -12,6 +12,7 @@ description: >
   "auto apply", or "job hunting" — even if they haven't explicitly mentioned resumex.
 requires:
   bins: [python3, curl]
+  pip: [requests>=2.28.0]
   env:
     required:
       - RESUMEX_API_KEY       # Required. Get from resumex.dev → Dashboard → Resumex API
@@ -141,11 +142,15 @@ interaction begins. If you are testing, set `MAX_APPLICATIONS=1` in your environ
 Use the agent endpoint. All calls require `Authorization: Bearer $RESUMEX_API_KEY`.
 
 ```bash
-# Fetch full resume data
+# Fetch full resume data (GET /api/v1/agent — the correct endpoint)
 curl -s -X GET "https://resumex.dev/api/v1/agent" \
   -H "Authorization: Bearer $RESUMEX_API_KEY" \
   -H "Content-Type: application/json"
 ```
+
+> **Note:** The endpoint is `/api/v1/agent` (NOT `/api/v1/agent/resume`, which is deprecated).
+> The helper scripts handle retries with exponential backoff automatically.
+> Install dependencies first: `pip3 install -r requirements.txt`
 
 Or via the helper script:
 
@@ -521,6 +526,15 @@ python3 scripts/log_application.py \
   --notes "Auto-applied via job applier skill."
 ```
 
+Use `--dry-run` to test without calling the API:
+```bash
+python3 scripts/log_application.py \
+  --company "Test" --role "Test" --url "https://example.com" --dry-run
+```
+
+The script automatically tries multiple endpoints (`/api/v1/agent/jobs`, then `/api/v1/agent/logs`)
+with retry logic and exponential backoff.
+
 Or via curl:
 ```bash
 curl -s -X POST "https://resumex.dev/api/v1/agent/jobs" \
@@ -574,19 +588,26 @@ If any applications had issues:
 
 ## Error Handling
 
-| Error | Response |
-|---|---|
-| `401 Unauthorized` | Ask user to check `RESUMEX_API_KEY` in OpenClaw environment |
-| `404 Not Found` | Resume may not be set up on resumex.dev — prompt user to create one |
-| `429 Rate Limited` | Wait 10s, retry once; if still limited, inform user |
-| No jobs found | Broaden search: remove location filter, try adjacent roles |
-| Web search blocked | Try alternate job boards (Naukri, Internshala, Wellfound, etc.) |
-| Browser can't load page | Note the job as "manual apply" and provide the link |
-| Form field type unknown | Ask the user what to enter, save to preferences |
-| Submit button not found | Take screenshot, ask user to review the page |
-| Application page requires login | Inform user to log in first, then retry |
-| CAPTCHA detected | Skip this application, mark as "manual", provide link |
-| Multi-step form timeout | Save progress screenshot, note which step failed |
+All HTTP scripts use the shared `http_client.py` module which provides automatic retry
+with exponential backoff. Transient errors (429, 5xx, network timeouts) are retried up
+to 3 times before failing. The `Retry-After` header is respected for rate limits.
+
+| Error | Category | Response |
+|---|---|---|
+| `401 Unauthorized` | Auth | Ask user to check `RESUMEX_API_KEY` in OpenClaw environment |
+| `403 Forbidden` | Auth | API key lacks permission — regenerate at resumex.dev |
+| `404 Not Found` | Not Found | Resume may not be set up, or endpoint has changed |
+| `429 Rate Limited` | Rate Limit | **Auto-retried** up to 3×, respects `Retry-After` header |
+| `5xx Server Error` | Server | **Auto-retried** with exponential backoff (1s, 2s, 4s) |
+| Network timeout | Network | **Auto-retried** once, then fails with clear message |
+| No jobs found | Search | Broaden search: remove location filter, try adjacent roles |
+| Web search blocked | Search | Try alternate job boards (Naukri, Internshala, Wellfound, etc.) |
+| Browser can't load page | Browser | Note the job as "manual apply" and provide the link |
+| Form field type unknown | Form | Ask the user what to enter, save to preferences |
+| Submit button not found | Form | Take screenshot, ask user to review the page |
+| Application page requires login | Browser | Inform user to log in first, then retry |
+| CAPTCHA detected | Browser | Skip this application, mark as "manual", provide link |
+| Multi-step form timeout | Browser | Save progress screenshot, note which step failed |
 
 ---
 
@@ -612,12 +633,14 @@ If any applications had issues:
 | File | Purpose |
 |---|---|
 | `SKILL.md` | This file — main instructions for the agent |
+| `scripts/http_client.py` | Shared HTTP client with retries, backoff, and error classification |
 | `scripts/fetch_resume.py` | Fetches and parses resume from resumex.dev (supports `--field` extraction) |
 | `scripts/search_jobs.py` | Constructs search queries and parses job posting results |
 | `scripts/fill_application.py` | Maps form fields to resume data, outputs browser instructions |
 | `scripts/manage_preferences.py` | CRUD for `user_preferences.json` (salary, visa, screening answers) |
 | `scripts/draft_cover_letter.py` | Builds cover letter prompt for OpenClaw's built-in AI (no external API) |
-| `scripts/log_application.py` | Logs a job application to resumex.dev tracker |
+| `scripts/log_application.py` | Logs a job application to resumex.dev tracker (with `--dry-run` support) |
+| `requirements.txt` | Python dependencies (`requests>=2.28.0`) |
 | `references/job_boards.md` | Job board search patterns, form selectors, browser notes |
 | `references/form_field_mappings.md` | Maps form field labels → resume JSON paths |
 | `references/screening_questions.md` | Common screening questions and handling strategies |

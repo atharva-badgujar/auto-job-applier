@@ -33,8 +33,6 @@ import json
 import os
 import re
 import sys
-import urllib.request
-import urllib.error
 from pathlib import Path
 
 # ── Field label → resume JSON path mapping ────────────────────────────────────
