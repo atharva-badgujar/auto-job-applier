@@ -14,7 +14,7 @@ requires:
   bins: [python3, curl]
   env:
     required:
-      - RESUMEX_API_KEY   # Get from resumex.dev → Dashboard → Resumex API
+      - RESUMEX_API_KEY       # Required. Get from resumex.dev → Dashboard → Resumex API
     optional:
       - JOB_SEARCH_LOCATION   # Default city/country for job search (e.g. "Pune, India")
       - JOB_TYPE              # full-time | part-time | contract | internship (default: full-time)
@@ -29,8 +29,89 @@ to relevant jobs via web search, presents an approval list, then **automatically
 approved jobs using browser automation — filling forms, answering screening questions, and
 submitting applications. All applications are logged to the resumex.dev job tracker.
 
-> **Architecture:** ResumeX stores resume data. OpenClaw's LLM does the thinking. Web search finds
-> jobs. Browser tool fills and submits applications. `user_preferences.json` remembers extra info.
+> **Architecture:** ResumeX stores resume data and the job tracker. **OpenClaw's built-in AI**
+> does all the thinking and text generation (cover letters, screening answers, scoring).
+> Web search finds jobs. Browser tool fills and submits applications.
+> `user_preferences.json` remembers extra info between sessions.
+
+> **No third-party AI API keys required.** This skill uses only OpenClaw's built-in LLM
+> for all AI tasks (cover letter drafting, screening question answers, job scoring).
+> The only external API key needed is `RESUMEX_API_KEY`.
+
+---
+
+## Required Environment Variable
+
+| Variable | Required | Description |
+|---|---|---|
+| `RESUMEX_API_KEY` | ✅ **Required** | API key from resumex.dev → Dashboard → Resumex API |
+| `JOB_SEARCH_LOCATION` | Optional | Override city/country for job search |
+| `JOB_TYPE` | Optional | `full-time` \| `part-time` \| `contract` \| `internship` |
+| `REMOTE_ONLY` | Optional | `true` \| `false` (default: `false`) |
+| `MAX_APPLICATIONS` | Optional | Max jobs to apply per session (default: `5`) |
+
+**How to set `RESUMEX_API_KEY` in OpenClaw:**
+1. Go to **resumex.dev → Dashboard → Resumex API**
+2. Click **Generate API Key**
+3. In OpenClaw, go to **Settings → Environment Variables**
+4. Add `RESUMEX_API_KEY` with the copied key value
+
+**No other keys are needed.** There is no Anthropic key, no OpenAI key, no other third-party service.
+
+---
+
+## Privacy & Data Handling
+
+> **Read this before using the skill.**
+
+### What data leaves your device
+
+| Data | Sent To | Why |
+|---|---|---|
+| Resume data (API read) | resumex.dev | To fetch your resume for job matching |
+| Application logs (company, role, URL, status) | resumex.dev | To track your job applications |
+| Your name, email, phone, LinkedIn | Job application websites | To fill application forms |
+| Cover letter (generated text) | Job application websites | Submitted as part of each application |
+
+**Data sent to resumex.dev is governed by the [resumex.dev Privacy Policy](https://resumex.dev/privacy).**
+
+### What stays local on your device
+
+| Data | Location | What It Contains |
+|---|---|---|
+| `data/user_preferences.json` | Skill directory only | Salary expectation, visa status, notice period, address, gender, date of birth, ethnicity, veteran status, disability status, screening question answers |
+
+> ⚠️ **`user_preferences.json` may contain sensitive personal data** including date of birth,
+> gender, ethnicity, veteran status, and disability status (only if you choose to save these
+> when prompted during a form fill). This file is stored **locally only** and is **never sent
+> to resumex.dev or any other server**. Review and restrict its filesystem permissions if needed:
+> ```bash
+> chmod 600 data/user_preferences.json
+> ```
+> To clear all saved preferences at any time:
+> ```bash
+> python3 scripts/manage_preferences.py reset
+> ```
+
+### Sensitive fields in preferences
+
+The following fields are only saved if you explicitly provide them when the agent encounters a
+form field that requires them. You can decline to answer, skip the field, or delete a saved
+value at any time:
+
+- `gender` — only for diversity/EEO forms
+- `ethnicity` — only for diversity/EEO forms (optional, you may leave blank)
+- `veteran_status` — only for U.S. government/contractor compliance forms
+- `disability_status` — only for compliance forms (optional)
+- `date_of_birth` — only for forms that legally require it
+
+The agent will always tell you **which form** requires a sensitive field before asking for the value.
+
+### Auto-submit safeguard
+
+**The agent NEVER submits an application without your explicit approval.** Step 6 of the workflow
+always presents a formatted approval list and waits for your response before any browser
+interaction begins. If you are testing, set `MAX_APPLICATIONS=1` in your environment.
 
 ---
 
@@ -42,13 +123,14 @@ submitting applications. All applications are logged to the resumex.dev job trac
 3. Build a job-match profile (skills, roles, seniority, preferences)
 4. Search the web for matching jobs (3–5 query permutations)
 5. Score & rank each job against the resume (0–100)
-6. Present formatted approval list → user selects which to apply
+6. ⛔ APPROVAL GATE — Present formatted list → wait for user selection
 7. For each approved job:
-   a. Navigate to application page via browser
-   b. Fill form fields using resume data + preferences
-   c. If a required field is unknown → ask the user → save to preferences
-   d. Submit the application
-   e. Log to resumex.dev job tracker
+   a. Generate a tailored cover letter (via OpenClaw's built-in AI)
+   b. Navigate to application page via browser
+   c. Fill form fields using resume data + preferences
+   d. If a required field is unknown → ask the user → save to preferences
+   e. Submit the application
+   f. Log to resumex.dev job tracker
 8. Present final summary with statuses
 ```
 
@@ -113,10 +195,13 @@ activeResume = workspace.resumes.find(r => r.id === workspace.activeResumeId)
 resumeData = activeResume.data
 ```
 
-If the API returns a `401`, the `RESUMEX_API_KEY` is missing or invalid. Prompt the user to:
-1. Go to **resumex.dev → Dashboard → Resumex API**
-2. Generate a new key
-3. Set `RESUMEX_API_KEY` in their OpenClaw environment
+**Error handling:**
+
+| HTTP Code | Cause | Fix |
+|---|---|---|
+| `401` | `RESUMEX_API_KEY` is missing or invalid | Go to resumex.dev → Dashboard → Resumex API → generate a new key |
+| `404` | Resume not created yet | Go to resumex.dev → create and publish your resume |
+| `429` | Rate limited | Wait 10 seconds, retry once |
 
 ---
 
@@ -224,10 +309,10 @@ score = (skills_matched / skills_required) * 40
 
 ---
 
-## Step 6 — Present Approval List to User
+## Step 6 — Present Approval List to User ⛔
 
 Present the **top 10 matches** in a formatted table. **The user MUST approve before any
-applications are submitted.** Never auto-apply without explicit approval.
+applications are submitted.** Never auto-apply without explicit approval. Never skip this step.
 
 **Format:**
 ```
@@ -264,7 +349,7 @@ Options: "all", "1,3,5", "1-5", "none", or "1-5 except 3"
 - `📧 Email apply` — Agent drafts the application email for user review.
 - `🔗 Manual (redirect)` — Redirects to external ATS. Agent navigates, user may need to complete.
 
-Wait for the user to respond with their selection before proceeding.
+**Wait for the user to respond with their selection before proceeding.**
 
 ---
 
@@ -272,17 +357,12 @@ Wait for the user to respond with their selection before proceeding.
 
 For each job the user approved, execute the following sub-steps:
 
-### 7a. Generate Cover Letter
+### 7a. Generate Cover Letter (via OpenClaw's built-in AI)
 
-For each approved job, generate a tailored cover letter using the resume data and job description.
+> **No external AI API is used.** Cover letters are generated by OpenClaw's own LLM.
 
-**Cover letter structure:**
-1. **Hook** (1 sentence): why this specific company/role excites the candidate
-2. **Match** (2–3 sentences): specific skills/experiences that directly map to job requirements
-3. **Value add** (1–2 sentences): a concrete result from their past work
-4. **Close** (1 sentence): call to action
-
-Keep it under 200 words. Professional but human tone.
+The `draft_cover_letter.py` script reads resume data and job details, then outputs a structured
+prompt. OpenClaw's agent uses that prompt with its built-in AI to generate the cover letter.
 
 ```bash
 python3 scripts/draft_cover_letter.py \
@@ -292,6 +372,19 @@ python3 scripts/draft_cover_letter.py \
   --job_description "We are looking for..." \
   --output /tmp/cover_letter_acme.txt
 ```
+
+The script outputs the generation prompt to stdout. The agent then:
+1. Reads the prompt
+2. Uses its built-in LLM to generate the cover letter text
+3. Saves the result to the `--output` path if specified
+
+**Cover letter structure:**
+1. **Hook** (1 sentence): why this specific company/role excites the candidate
+2. **Match** (2–3 sentences): specific skills/experiences that directly map to job requirements
+3. **Value add** (1–2 sentences): a concrete result from their past work
+4. **Close** (1 sentence): call to action
+
+Keep it under 200 words. Professional but human tone.
 
 ### 7b. Navigate to Application Page
 
@@ -373,6 +466,10 @@ python3 scripts/manage_preferences.py set "[field_key]" "[user_answer]"
 ```
 4. **Fill the field** with the user's answer and continue
 
+> When asking for **sensitive fields** (gender, ethnicity, DOB, veteran/disability status),
+> always mention which company's form requires it and that the answer will be saved locally.
+> The user may decline — if so, skip the field or leave it blank if optional.
+
 **Don't ask again for the same field type.** Once "salary expectation" is saved, use it for all
 future applications unless the user explicitly changes it.
 
@@ -394,8 +491,8 @@ python3 scripts/manage_preferences.py set-screening "authorized_to_work" "Yes"
 - "What is your expected salary?" → use `salary_expectation`
 - "What is your notice period?" → use `notice_period`
 - "Are you willing to relocate?" → use `willing_to_relocate`
-- "Why are you interested in this role?" → generate using LLM from resume + job description
-- "Describe your experience with [X]" → generate using LLM from resume data
+- "Why are you interested in this role?" → generate using OpenClaw's built-in LLM from resume + job description
+- "Describe your experience with [X]" → generate using OpenClaw's built-in LLM from resume data
 
 See `references/screening_questions.md` for the full list.
 
@@ -460,7 +557,7 @@ After all approved applications are processed, show a clean summary:
 
 📝 Notes:
   • All applications logged to your resumex.dev tracker
-  • Cover letters generated for each role
+  • Cover letters generated using OpenClaw's built-in AI
   • Saved preferences: salary_expectation, notice_period (for future use)
 
 💡 Tip: Re-run this skill weekly for fresh job listings!
@@ -504,7 +601,9 @@ If any applications had issues:
 7. **Take screenshots** before and after form submission for the user's records.
 8. **Handle CAPTCHAs gracefully** — if detected, mark the job as "manual apply" and move on.
 9. **Rate limits** — resumex.dev API has rate limits. Don't call the resume endpoint more than once per session.
-10. **Privacy** — resume data is fetched live. Saved preferences are stored locally only.
+10. **No external AI APIs** — cover letters and text generation use OpenClaw's built-in LLM only.
+11. **Privacy** — resume data is fetched live from resumex.dev. Saved preferences are stored locally only in `data/user_preferences.json` and never transmitted to any server.
+12. **Sensitive fields** — always inform the user before saving sensitive data (gender, DOB, ethnicity, etc.) and allow them to decline.
 
 ---
 
@@ -517,9 +616,9 @@ If any applications had issues:
 | `scripts/search_jobs.py` | Constructs search queries and parses job posting results |
 | `scripts/fill_application.py` | Maps form fields to resume data, outputs browser instructions |
 | `scripts/manage_preferences.py` | CRUD for `user_preferences.json` (salary, visa, screening answers) |
-| `scripts/draft_cover_letter.py` | Generates a tailored cover letter given resume + job description |
+| `scripts/draft_cover_letter.py` | Builds cover letter prompt for OpenClaw's built-in AI (no external API) |
 | `scripts/log_application.py` | Logs a job application to resumex.dev tracker |
 | `references/job_boards.md` | Job board search patterns, form selectors, browser notes |
 | `references/form_field_mappings.md` | Maps form field labels → resume JSON paths |
 | `references/screening_questions.md` | Common screening questions and handling strategies |
-| `data/user_preferences.json` | Persistent storage for user answers (auto-created at runtime) |
+| `data/user_preferences.json` | Persistent local storage for user answers (auto-created at runtime) |
