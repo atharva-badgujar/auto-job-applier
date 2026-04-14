@@ -8,6 +8,7 @@ Usage:
         --role "Software Engineer" \
         --url "https://linkedin.com/jobs/view/12345" \
         --status "applied" \
+        [--method "auto-applied"] \
         [--cover_letter "path/to/cover.txt"] \
         [--score 87] \
         [--notes "Extra notes here"]
@@ -17,6 +18,9 @@ Environment variables:
 
 Valid status values:
     wishlist | applied | interview | offer | rejected
+
+Valid method values:
+    auto-applied | manual | easy-apply | email
 """
 
 import os
@@ -29,6 +33,7 @@ from datetime import date
 
 API_BASE = "https://resumex.dev/api/v1/agent"
 VALID_STATUSES = {"wishlist", "applied", "interview", "offer", "rejected"}
+VALID_METHODS = {"auto-applied", "manual", "easy-apply", "email"}
 
 
 def get_api_key():
@@ -78,6 +83,12 @@ def main():
     )
     parser.add_argument("--cover_letter", help="Path to cover letter text file (optional)")
     parser.add_argument("--score", type=int, help="Match score 0-100 (optional)")
+    parser.add_argument(
+        "--method",
+        default="manual",
+        choices=list(VALID_METHODS),
+        help="Application method (default: manual)",
+    )
     parser.add_argument("--notes", default="", help="Extra notes (optional)")
     args = parser.parse_args()
 
@@ -85,6 +96,7 @@ def main():
     notes_parts = []
     if args.score is not None:
         notes_parts.append(f"Match score: {args.score}/100.")
+    notes_parts.append(f"Method: {args.method}.")
     if args.notes:
         notes_parts.append(args.notes)
     notes_parts.append("Applied via Auto Job Applier skill.")
